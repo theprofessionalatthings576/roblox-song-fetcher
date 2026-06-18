@@ -42,7 +42,7 @@ def search_song():
         "description": "Uploaded via Flask bot",
         "creationContext": {
             "creator": {
-                "userId": 1
+                "userId": 3940407045
             }
         }
     }

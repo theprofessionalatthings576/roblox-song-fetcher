@@ -38,9 +38,22 @@ def search_song():
         'temporary': 'true'  # Crucial to avoid Robux charges
     }
     
-    upload_resp = requests.post(upload_url, headers=headers, files=files, data=data)
-    if upload_resp.status_code != 200:
-        return jsonify({"error": "Failed to upload to Roblox"}), 500
+   upload_resp = requests.post(
+    upload_url,
+    headers=headers,
+    files=files,
+    data=data
+)
+
+print("Status:", upload_resp.status_code)
+print("Response:", upload_resp.text)
+
+if upload_resp.status_code != 200:
+    return jsonify({
+        "error": "Failed to upload to Roblox",
+        "status": upload_resp.status_code,
+        "details": upload_resp.text
+    }), 500
 
     asset_id = upload_resp.json().get('assetId')
 

@@ -2,3 +2,4 @@ flask
 requests
 flask-cors
 gunicorn
+better-profanity

@@ -1,11 +1,43 @@
+import os
 import requests
 from flask import Flask, request, jsonify
-import os
-import json
+
+# better-profanity ships with a maintained, well-tested default wordlist
+# (swears, slurs, sexual terms) and censors matches with asterisks.
+# Install with: pip install better-profanity
+from better_profanity import profanity
 
 app = Flask(__name__)
+profanity.load_censor_words()
 
-ROBLOX_API_KEY = os.environ.get("roblox_api_key")
+# Add any extra game-specific terms you want blocked, e.g.:
+# profanity.add_censor_words(["yourword1", "yourword2"])
+
+
+def is_explicit(track):
+    """
+    Returns True if a Deezer track is flagged as explicit.
+    Checks the lyrics flag (album art flags are no longer relevant
+    since cover art support has been removed).
+
+    Deezer's explicit_content_lyrics codes:
+      0 = Not Explicit
+      1 = Explicit
+      2 = Unknown
+      3 = Edited (clean version)
+    """
+    if track.get("explicit_lyrics"):
+        return True
+    if track.get("explicit_content_lyrics") == 1:
+        return True
+    return False
+
+
+def censor(text):
+    """Replace blacklisted words (swears, slurs, sexual terms) with asterisks."""
+    if not text:
+        return text
+    return profanity.censor(text)
 
 
 @app.route('/search')
@@ -14,70 +46,39 @@ def search_song():
     if not query:
         return jsonify({"error": "Missing query"}), 400
 
+    # Optional escape hatch: /search?q=...&allow_explicit=true
+    allow_explicit = request.args.get('allow_explicit', 'false').lower() == 'true'
+
     # 1. Deezer API
     deezer_url = f"https://api.deezer.com/search?q={query}"
     deezer_resp = requests.get(deezer_url).json()
-
-    if not deezer_resp.get('data'):
+    results = deezer_resp.get('data')
+    if not results:
         return jsonify({"error": "No results"}), 404
 
-    track = deezer_resp['data'][0]
-    title = track['title']
-    artist = track['artist']['name']
-    cover_url = track['album']['cover_xl']
+    # 2. Pick the first track that passes the explicit filter
+    track = None
+    if allow_explicit:
+        track = results[0]
+    else:
+        for candidate in results:
+            if not is_explicit(candidate):
+                track = candidate
+                break
+        if track is None:
+            return jsonify({
+                "error": "No clean (non-explicit) results found",
+                "checked": len(results)
+            }), 404
 
-    # 2. Download image
-    img_data = requests.get(cover_url).content
-
-    # 3. Roblox upload (CORRECT endpoint)
-    upload_url = "https://apis.roblox.com/assets/v1/assets"
-
-    headers = {
-        "x-api-key": ROBLOX_API_KEY
-    }
-
-    metadata = {
-        "assetType": "Decal",
-        "displayName": f"{title} - {artist}",
-        "description": "Uploaded via Flask bot",
-        "creationContext": {
-            "creator": {
-                "userId": 3940407045
-            }
-        }
-    }
-
-    files = {
-        "fileContent": ("cover.jpg", img_data, "image/jpeg")
-    }
-
-    data = {
-        "request": json.dumps(metadata)
-    }
-
-    upload_resp = requests.post(
-        upload_url,
-        headers=headers,
-        files=files,
-        data=data
-    )
-
-    print("Status:", upload_resp.status_code)
-    print("Response:", upload_resp.text)
-
-    if upload_resp.status_code != 200:
-        return jsonify({
-            "error": "Failed to upload to Roblox",
-            "status": upload_resp.status_code,
-            "details": upload_resp.text
-        }), 500
-
-    asset_id = upload_resp.json().get("assetId")
+    # 3. Censor any blacklisted words in the title/artist before returning
+    title = censor(track['title'])
+    artist = censor(track['artist']['name'])
 
     return jsonify({
         "title": title,
         "artist": artist,
-        "assetId": asset_id
+        "explicit": is_explicit(track)
     })
 
 

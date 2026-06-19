@@ -1,4 +1,6 @@
 import os
+import time
+import random
 import requests
 from flask import Flask, request, jsonify
 
@@ -14,6 +16,10 @@ profanity.load_censor_words()
 # profanity.add_censor_words(["yourword1", "yourword2"])
 
 MAX_RESULTS = 10
+RANDOM_MAX_ATTEMPTS = 25
+ANCHOR_TTL_SECONDS = 3600  # re-check Deezer's current catalog size hourly
+
+_anchor_cache = {"max_id": None, "timestamp": 0}
 
 
 def is_explicit(track):
@@ -38,6 +44,34 @@ def censor(text):
     if not text:
         return text
     return profanity.censor(text)
+
+
+def get_anchor_max_id():
+    """
+    Returns a current, self-updating upper bound for Deezer track IDs by
+    checking the global chart. This avoids hardcoding a max ID that would
+    go stale as Deezer's catalog grows.
+    """
+    now = time.time()
+    if _anchor_cache["max_id"] and (now - _anchor_cache["timestamp"] < ANCHOR_TTL_SECONDS):
+        return _anchor_cache["max_id"]
+
+    try:
+        resp = requests.get("https://api.deezer.com/chart/0/tracks?limit=50", timeout=5).json()
+        track_ids = [t["id"] for t in resp.get("data", []) if "id" in t]
+        if track_ids:
+            # Pad the highest chart ID a bit, since chart tracks are popular
+            # but not necessarily Deezer's very newest additions
+            anchor = int(max(track_ids) * 1.2)
+            _anchor_cache["max_id"] = anchor
+            _anchor_cache["timestamp"] = now
+            return anchor
+    except Exception:
+        pass
+
+    # Fallback if the chart call fails: reuse the last known good anchor,
+    # or a conservative default if we've never successfully fetched one
+    return _anchor_cache["max_id"] or 4_000_000_000
 
 
 @app.route('/search')
@@ -76,6 +110,43 @@ def search_song():
         }), 404
 
     return jsonify({"results": results})
+
+
+@app.route('/random')
+def random_song():
+    """
+    Returns one genuinely random track from across Deezer's catalog by
+    hitting /track/{id} with a random ID, rather than biasing toward
+    whatever a search query happens to surface.
+    """
+    allow_explicit = request.args.get('allow_explicit', 'false').lower() == 'true'
+    max_id = get_anchor_max_id()
+
+    for _ in range(RANDOM_MAX_ATTEMPTS):
+        track_id = random.randint(1, max_id)
+
+        try:
+            resp = requests.get(f"https://api.deezer.com/track/{track_id}", timeout=5).json()
+        except Exception:
+            continue
+
+        # Gaps in the ID space (deleted tracks, unused IDs) return an
+        # error or incomplete object - skip and try another ID
+        if not resp or resp.get("error") or not resp.get("title") or not resp.get("artist"):
+            continue
+
+        if not allow_explicit and is_explicit(resp):
+            continue
+
+        return jsonify({
+            "result": {
+                "title": censor(resp["title"]),
+                "artist": censor(resp["artist"]["name"]),
+                "explicit": is_explicit(resp)
+            }
+        })
+
+    return jsonify({"error": "Could not find a track after several attempts, try again"}), 503
 
 
 if __name__ == '__main__':

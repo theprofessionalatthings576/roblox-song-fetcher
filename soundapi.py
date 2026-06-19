@@ -13,12 +13,12 @@ profanity.load_censor_words()
 # Add any extra game-specific terms you want blocked, e.g.:
 # profanity.add_censor_words(["yourword1", "yourword2"])
 
+MAX_RESULTS = 10
+
 
 def is_explicit(track):
     """
-    Returns True if a Deezer track is flagged as explicit.
-    Checks the lyrics flag (album art flags are no longer relevant
-    since cover art support has been removed).
+    Returns True if a Deezer track is flagged as explicit (lyrics).
 
     Deezer's explicit_content_lyrics codes:
       0 = Not Explicit
@@ -52,34 +52,30 @@ def search_song():
     # 1. Deezer API
     deezer_url = f"https://api.deezer.com/search?q={query}"
     deezer_resp = requests.get(deezer_url).json()
-    results = deezer_resp.get('data')
-    if not results:
+    raw_results = deezer_resp.get('data')
+    if not raw_results:
         return jsonify({"error": "No results"}), 404
 
-    # 2. Pick the first track that passes the explicit filter
-    track = None
-    if allow_explicit:
-        track = results[0]
-    else:
-        for candidate in results:
-            if not is_explicit(candidate):
-                track = candidate
-                break
-        if track is None:
-            return jsonify({
-                "error": "No clean (non-explicit) results found",
-                "checked": len(results)
-            }), 404
+    # 2. Filter explicit tracks, censor text, cap at MAX_RESULTS
+    results = []
+    for track in raw_results:
+        if not allow_explicit and is_explicit(track):
+            continue
+        results.append({
+            "title": censor(track['title']),
+            "artist": censor(track['artist']['name']),
+            "explicit": is_explicit(track)
+        })
+        if len(results) >= MAX_RESULTS:
+            break
 
-    # 3. Censor any blacklisted words in the title/artist before returning
-    title = censor(track['title'])
-    artist = censor(track['artist']['name'])
+    if not results:
+        return jsonify({
+            "error": "No clean (non-explicit) results found",
+            "checked": len(raw_results)
+        }), 404
 
-    return jsonify({
-        "title": title,
-        "artist": artist,
-        "explicit": is_explicit(track)
-    })
+    return jsonify({"results": results})
 
 
 if __name__ == '__main__':

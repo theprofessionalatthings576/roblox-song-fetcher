@@ -21,6 +21,35 @@ ANCHOR_TTL_SECONDS = 3600  # re-check Deezer's current catalog size hourly
 
 _anchor_cache = {"max_id": None, "timestamp": 0}
 
+# Deezer tracks don't carry genre info directly - it lives on the album.
+# Cache album_id -> genre name so repeated albums don't trigger extra calls.
+_genre_cache = {}
+
+
+def get_genre(album_id):
+    """
+    Looks up the primary genre name for a Deezer album ID.
+    Falls back to "Unknown" if the album has no genre data or the
+    lookup fails for any reason.
+    """
+    if not album_id:
+        return "Unknown"
+
+    if album_id in _genre_cache:
+        return _genre_cache[album_id]
+
+    genre_name = "Unknown"
+    try:
+        resp = requests.get(f"https://api.deezer.com/album/{album_id}", timeout=5).json()
+        genres = resp.get("genres", {}).get("data", [])
+        if genres:
+            genre_name = genres[0].get("name", "Unknown")
+    except Exception:
+        pass
+
+    _genre_cache[album_id] = genre_name
+    return genre_name
+
 
 def is_explicit(track):
     """
@@ -91,9 +120,11 @@ def search_song():
     # 2. Censor text, cap at MAX_RESULTS (no explicit filtering)
     results = []
     for track in raw_results:
+        album_id = track.get('album', {}).get('id')
         results.append({
             "title": censor(track['title']),
             "artist": censor(track['artist']['name']),
+            "genre": get_genre(album_id),
             "explicit": is_explicit(track)
         })
         if len(results) >= MAX_RESULTS:
@@ -128,6 +159,7 @@ def random_song():
             "result": {
                 "title": censor(resp["title"]),
                 "artist": censor(resp["artist"]["name"]),
+                "genre": get_genre(resp.get('album', {}).get('id')),
                 "explicit": is_explicit(resp)
             }
         })

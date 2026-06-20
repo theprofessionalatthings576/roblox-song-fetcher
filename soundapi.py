@@ -25,6 +25,7 @@ _anchor_cache = {"max_id": None, "timestamp": 0}
 def is_explicit(track):
     """
     Returns True if a Deezer track is flagged as explicit (lyrics).
+    Kept for informational purposes only - no longer used to filter results.
 
     Deezer's explicit_content_lyrics codes:
       0 = Not Explicit
@@ -80,9 +81,6 @@ def search_song():
     if not query:
         return jsonify({"error": "Missing query"}), 400
 
-    # Optional escape hatch: /search?q=...&allow_explicit=true
-    allow_explicit = request.args.get('allow_explicit', 'false').lower() == 'true'
-
     # 1. Deezer API
     deezer_url = f"https://api.deezer.com/search?q={query}"
     deezer_resp = requests.get(deezer_url).json()
@@ -90,11 +88,9 @@ def search_song():
     if not raw_results:
         return jsonify({"error": "No results"}), 404
 
-    # 2. Filter explicit tracks, censor text, cap at MAX_RESULTS
+    # 2. Censor text, cap at MAX_RESULTS (no explicit filtering)
     results = []
     for track in raw_results:
-        if not allow_explicit and is_explicit(track):
-            continue
         results.append({
             "title": censor(track['title']),
             "artist": censor(track['artist']['name']),
@@ -102,12 +98,6 @@ def search_song():
         })
         if len(results) >= MAX_RESULTS:
             break
-
-    if not results:
-        return jsonify({
-            "error": "No clean (non-explicit) results found",
-            "checked": len(raw_results)
-        }), 404
 
     return jsonify({"results": results})
 
@@ -119,7 +109,6 @@ def random_song():
     hitting /track/{id} with a random ID, rather than biasing toward
     whatever a search query happens to surface.
     """
-    allow_explicit = request.args.get('allow_explicit', 'false').lower() == 'true'
     max_id = get_anchor_max_id()
 
     for _ in range(RANDOM_MAX_ATTEMPTS):
@@ -133,9 +122,6 @@ def random_song():
         # Gaps in the ID space (deleted tracks, unused IDs) return an
         # error or incomplete object - skip and try another ID
         if not resp or resp.get("error") or not resp.get("title") or not resp.get("artist"):
-            continue
-
-        if not allow_explicit and is_explicit(resp):
             continue
 
         return jsonify({

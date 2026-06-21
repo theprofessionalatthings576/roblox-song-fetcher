@@ -126,6 +126,7 @@ def search_song():
             "title": censor(track['title']),
             "artist": censor(track['artist']['name']),
             "genre": get_genre(album_id),
+            "rank": track.get('rank', 0),
             "explicit": is_explicit(track)
         })
         if len(results) >= MAX_RESULTS:
@@ -162,6 +163,7 @@ def random_song():
                 "title": censor(resp["title"]),
                 "artist": censor(resp["artist"]["name"]),
                 "genre": get_genre(resp.get('album', {}).get('id')),
+                "rank": resp.get('rank', 0),
                 "explicit": is_explicit(resp)
             }
         })

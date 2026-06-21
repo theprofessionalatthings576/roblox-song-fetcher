@@ -122,6 +122,7 @@ def search_song():
     for track in raw_results:
         album_id = track.get('album', {}).get('id')
         results.append({
+            "id": track['id'],
             "title": censor(track['title']),
             "artist": censor(track['artist']['name']),
             "genre": get_genre(album_id),
@@ -157,6 +158,7 @@ def random_song():
 
         return jsonify({
             "result": {
+                "id": resp['id'],
                 "title": censor(resp["title"]),
                 "artist": censor(resp["artist"]["name"]),
                 "genre": get_genre(resp.get('album', {}).get('id')),

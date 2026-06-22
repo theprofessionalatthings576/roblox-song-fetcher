@@ -133,13 +133,33 @@ def search_song():
     return jsonify({"results": results})
 
 
+# Chart-based pool for high tiers - guaranteed popular artists
+TIER_CHART_URLS = {
+    "Legendary": "https://api.deezer.com/chart/0/tracks?limit=100",
+    "Epic":      "https://api.deezer.com/chart/0/tracks?limit=100",
+    "Rare":      "https://api.deezer.com/chart/0/tracks?limit=100",
+}
+
 @app.route('/random')
 def random_song():
+    tier = request.args.get('tier', 'Common')  # Roblox passes the rolled tier
     max_id = get_anchor_max_id()
 
+    # High tiers: sample from Deezer charts (all real popular artists)
+    if tier in TIER_CHART_URLS:
+        try:
+            resp = requests.get(TIER_CHART_URLS[tier], timeout=5).json()
+            tracks = resp.get("data", [])
+            if tracks:
+                track = random.choice(tracks)
+                artist_id = track.get("artist", {}).get("id")
+                return jsonify({"result": build_track_result(track, artist_id=artist_id)})
+        except Exception:
+            pass  # fall through to random ID as last resort
+
+    # Common/Uncommon: blind random ID sampling (obscure catalog)
     for _ in range(RANDOM_MAX_ATTEMPTS):
         track_id = random.randint(1, max_id)
-
         try:
             resp = requests.get(f"https://api.deezer.com/track/{track_id}", timeout=5).json()
         except Exception:
@@ -148,16 +168,7 @@ def random_song():
         if not resp or resp.get("error") or not resp.get("title") or not resp.get("artist"):
             continue
 
-        # /track/{id} returns a flat artist object (id + name directly),
-        # so we pass artist id explicitly rather than relying on the nested
-        # structure that build_track_result expects from search results
         artist_id = resp.get("artist", {}).get("id")
-
         return jsonify({"result": build_track_result(resp, artist_id=artist_id)})
 
     return jsonify({"error": "Could not find a track after several attempts, try again"}), 503
-
-
-if __name__ == '__main__':
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)

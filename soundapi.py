@@ -4,37 +4,23 @@ import random
 import requests
 from flask import Flask, request, jsonify
 
-# better-profanity ships with a maintained, well-tested default wordlist
-# (swears, slurs, sexual terms) and censors matches with asterisks.
-# Install with: pip install better-profanity
 from better_profanity import profanity
 
 app = Flask(__name__)
 profanity.load_censor_words()
 
-# Add any extra game-specific terms you want blocked, e.g.:
-# profanity.add_censor_words(["yourword1", "yourword2"])
-
 MAX_RESULTS = 10
 RANDOM_MAX_ATTEMPTS = 25
-ANCHOR_TTL_SECONDS = 3600  # re-check Deezer's current catalog size hourly
+ANCHOR_TTL_SECONDS = 3600
 
 _anchor_cache = {"max_id": None, "timestamp": 0}
-
-# Deezer tracks don't carry genre info directly - it lives on the album.
-# Cache album_id -> genre name so repeated albums don't trigger extra calls.
 _genre_cache = {}
+_artist_fan_cache = {}  # artist_id -> nb_fan, persists for the server's lifetime
 
 
 def get_genre(album_id):
-    """
-    Looks up the primary genre name for a Deezer album ID.
-    Falls back to "Unknown" if the album has no genre data or the
-    lookup fails for any reason.
-    """
     if not album_id:
         return "Unknown"
-
     if album_id in _genre_cache:
         return _genre_cache[album_id]
 
@@ -51,17 +37,29 @@ def get_genre(album_id):
     return genre_name
 
 
-def is_explicit(track):
+def get_artist_fans(artist_id):
     """
-    Returns True if a Deezer track is flagged as explicit (lyrics).
-    Kept for informational purposes only - no longer used to filter results.
+    Fetches the nb_fan (follower count) for a Deezer artist.
+    Cached indefinitely per server session since fan counts change slowly.
+    Falls back to 0 on any failure so rarity gracefully becomes Common.
+    """
+    if not artist_id:
+        return 0
+    if artist_id in _artist_fan_cache:
+        return _artist_fan_cache[artist_id]
 
-    Deezer's explicit_content_lyrics codes:
-      0 = Not Explicit
-      1 = Explicit
-      2 = Unknown
-      3 = Edited (clean version)
-    """
+    nb_fan = 0
+    try:
+        resp = requests.get(f"https://api.deezer.com/artist/{artist_id}", timeout=5).json()
+        nb_fan = int(resp.get("nb_fan", 0))
+    except Exception:
+        pass
+
+    _artist_fan_cache[artist_id] = nb_fan
+    return nb_fan
+
+
+def is_explicit(track):
     if track.get("explicit_lyrics"):
         return True
     if track.get("explicit_content_lyrics") == 1:
@@ -70,18 +68,12 @@ def is_explicit(track):
 
 
 def censor(text):
-    """Replace blacklisted words (swears, slurs, sexual terms) with asterisks."""
     if not text:
         return text
     return profanity.censor(text)
 
 
 def get_anchor_max_id():
-    """
-    Returns a current, self-updating upper bound for Deezer track IDs by
-    checking the global chart. This avoids hardcoding a max ID that would
-    go stale as Deezer's catalog grows.
-    """
     now = time.time()
     if _anchor_cache["max_id"] and (now - _anchor_cache["timestamp"] < ANCHOR_TTL_SECONDS):
         return _anchor_cache["max_id"]
@@ -90,8 +82,6 @@ def get_anchor_max_id():
         resp = requests.get("https://api.deezer.com/chart/0/tracks?limit=50", timeout=5).json()
         track_ids = [t["id"] for t in resp.get("data", []) if "id" in t]
         if track_ids:
-            # Pad the highest chart ID a bit, since chart tracks are popular
-            # but not necessarily Deezer's very newest additions
             anchor = int(max(track_ids) * 1.2)
             _anchor_cache["max_id"] = anchor
             _anchor_cache["timestamp"] = now
@@ -99,9 +89,27 @@ def get_anchor_max_id():
     except Exception:
         pass
 
-    # Fallback if the chart call fails: reuse the last known good anchor,
-    # or a conservative default if we've never successfully fetched one
     return _anchor_cache["max_id"] or 4_000_000_000
+
+
+def build_track_result(track_data, artist_id=None):
+    """
+    Shared helper that builds the result dict sent to Roblox for both
+    the search and random endpoints. Fetches genre and nb_fan in one place.
+    artist_id can be passed directly if already extracted from the track object.
+    """
+    resolved_artist_id = artist_id or track_data.get("artist", {}).get("id")
+    album_id = track_data.get("album", {}).get("id")
+
+    return {
+        "id":       track_data["id"],
+        "title":    censor(track_data["title"]),
+        "artist":   censor(track_data["artist"]["name"]),
+        "genre":    get_genre(album_id),
+        "rank":     track_data.get("rank", 0),
+        "nb_fan":   get_artist_fans(resolved_artist_id),
+        "explicit": is_explicit(track_data),
+    }
 
 
 @app.route('/search')
@@ -110,25 +118,15 @@ def search_song():
     if not query:
         return jsonify({"error": "Missing query"}), 400
 
-    # 1. Deezer API
     deezer_url = f"https://api.deezer.com/search?q={query}"
     deezer_resp = requests.get(deezer_url).json()
     raw_results = deezer_resp.get('data')
     if not raw_results:
         return jsonify({"error": "No results"}), 404
 
-    # 2. Censor text, cap at MAX_RESULTS (no explicit filtering)
     results = []
     for track in raw_results:
-        album_id = track.get('album', {}).get('id')
-        results.append({
-            "id": track['id'],
-            "title": censor(track['title']),
-            "artist": censor(track['artist']['name']),
-            "genre": get_genre(album_id),
-            "rank": track.get('rank', 0),
-            "explicit": is_explicit(track)
-        })
+        results.append(build_track_result(track))
         if len(results) >= MAX_RESULTS:
             break
 
@@ -137,11 +135,6 @@ def search_song():
 
 @app.route('/random')
 def random_song():
-    """
-    Returns one genuinely random track from across Deezer's catalog by
-    hitting /track/{id} with a random ID, rather than biasing toward
-    whatever a search query happens to surface.
-    """
     max_id = get_anchor_max_id()
 
     for _ in range(RANDOM_MAX_ATTEMPTS):
@@ -152,21 +145,15 @@ def random_song():
         except Exception:
             continue
 
-        # Gaps in the ID space (deleted tracks, unused IDs) return an
-        # error or incomplete object - skip and try another ID
         if not resp or resp.get("error") or not resp.get("title") or not resp.get("artist"):
             continue
 
-        return jsonify({
-            "result": {
-                "id": resp['id'],
-                "title": censor(resp["title"]),
-                "artist": censor(resp["artist"]["name"]),
-                "genre": get_genre(resp.get('album', {}).get('id')),
-                "rank": resp.get('rank', 0),
-                "explicit": is_explicit(resp)
-            }
-        })
+        # /track/{id} returns a flat artist object (id + name directly),
+        # so we pass artist id explicitly rather than relying on the nested
+        # structure that build_track_result expects from search results
+        artist_id = resp.get("artist", {}).get("id")
+
+        return jsonify({"result": build_track_result(resp, artist_id=artist_id)})
 
     return jsonify({"error": "Could not find a track after several attempts, try again"}), 503
 

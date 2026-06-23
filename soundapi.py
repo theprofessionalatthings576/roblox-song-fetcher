@@ -133,11 +133,11 @@ def search_song():
     return jsonify({"results": results})
 
 TIER_FAN_RANGES = {
-    "Legendary": (10_000_000, None),   # 10M+ fans
-    "Epic":      (1_000_000, 10_000_000),
-    "Rare":      (100_000, 1_000_000),
-    "Uncommon":  (10_000, 100_000),
-    "Common":    (0, 10_000),
+    "Legendary": (10_000_000, None),      # 10M+ fans
+    "Epic":      (1_000_000, 10_000_000), # 1M–10M
+    "Rare":      (100_000,   1_000_000),  # 100K–1M
+    "Uncommon":  (10_000,    100_000),    # 10K–100K
+    "Common":    (0,         10_000),     # under 10K
 }
 
 @app.route('/random')

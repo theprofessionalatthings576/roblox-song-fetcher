@@ -37,6 +37,8 @@ SEARCH_SEEDS = [
     "always", "maybe", "again", "away", "back", "down", "up", "together", "alone",
     "baby", "girl", "boy", "man", "woman", "king", "queen", "angel", "devil", "ghost",
     "rock", "roll", "beat", "bass", "melody", "rhythm", "song", "music", "world", "city",
+    "the", "a", "an", "to", "one", "but", "where", "when", "why", "who", "it", "he", "she",
+    "his", "her", "their", "you", "your", "him", "hers", "on", "in", "at", "ever", "if",
 ]
 
 

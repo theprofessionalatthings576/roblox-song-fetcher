@@ -37,8 +37,9 @@ SEARCH_SEEDS = [
     "always", "maybe", "again", "away", "back", "down", "up", "together", "alone",
     "baby", "girl", "boy", "man", "woman", "king", "queen", "angel", "devil", "ghost",
     "rock", "roll", "beat", "bass", "melody", "rhythm", "song", "music", "world", "city",
-    "the", "a", "an", "to", "one", "but", "where", "when", "why", "who", "it", "he", "she",
-    "his", "her", "their", "you", "your", "him", "hers", "on", "in", "at", "ever", "if",
+    "one", "but", "where", "when", "why", "who", 
+    "his", "her", "their", "you", "your", "him", "hers", "on", "in", "at", "ever", "if", 
+    "all", "yours", "beside", "under", "over", "yes", "no", "not", "win", "lose", "end", 
 ]
 
 
@@ -131,116 +132,163 @@ def build_track_result(track_data, artist_id=None, nb_fan=None):
 
 # ── Track sourcing ─────────────────────────────────────────────────────────────
 
-def get_random_common_track():
-    """Blind random ID sampling — works well for obscure/Common tracks."""
-    max_id = get_anchor_max_id()
+# ── Track sourcing ─────────────────────────────────────────────────────────────
 
-    for _ in range(RANDOM_MAX_ATTEMPTS):
-        track_id = random.randint(1, max_id)
-        try:
-            resp = requests.get(f"https://api.deezer.com/track/{track_id}", timeout=5).json()
-        except Exception:
-            continue
-
-        if not resp or resp.get("error") or not resp.get("title") or not resp.get("artist"):
-            continue
-        if is_explicit(resp):
-            continue
-
-        artist_id = resp.get("artist", {}).get("id")
-        nb_fan = get_artist_fans(artist_id)
-
-        if nb_fan >= 10_000:
-            continue
-
-        return resp, artist_id, nb_fan
-
-    return None, None, None
-
-
-def get_random_tiered_track(fan_min, fan_max):
+def generate_random_seed():
     """
-    Seeds random Deezer searches with common words to access the full
-    catalog, then filters results by artist fan count to match the tier.
+    Returns either:
+    - single seed word
+    - two-word seed phrase
+
+    This greatly expands Deezer search coverage.
     """
-    seeds_tried = set()
 
-    for _ in range(RANDOM_MAX_ATTEMPTS):
-        # Pick a seed word we haven't tried yet this request
-        available = [s for s in SEARCH_SEEDS if s not in seeds_tried]
-        if not available:
-            seeds_tried.clear()
-            available = SEARCH_SEEDS
+    if random.random() < 0.4:
+        return random.choice(SEARCH_SEEDS)
 
-        seed = random.choice(available)
-        seeds_tried.add(seed)
+    return (
+        f"{random.choice(SEARCH_SEEDS)} "
+        f"{random.choice(SEARCH_SEEDS)}"
+    )
+
+
+def get_candidate_tracks(
+    fan_min,
+    fan_max,
+    searches=12,
+    page_size=25,
+):
+    """
+    Build a pool of matching tracks from many random searches.
+    """
+
+    candidates = []
+    seen_track_ids = set()
+    seen_artists = set()
+
+    for _ in range(searches):
+
+        seed = generate_random_seed()
+
+        offset = random.randint(0, 20) * page_size
 
         try:
             resp = requests.get(
-                f"https://api.deezer.com/search?q={seed}&limit=100&order=RATING_DESC",
+                f"https://api.deezer.com/search?q={seed}"
+                f"&limit={page_size}"
+                f"&index={offset}",
                 timeout=5
             ).json()
-            tracks = resp.get("data", [])
+
         except Exception:
             continue
+
+        tracks = resp.get("data", [])
 
         random.shuffle(tracks)
 
         for track in tracks:
+
             if is_explicit(track):
                 continue
 
+            track_id = track.get("id")
             artist_id = track.get("artist", {}).get("id")
+
+            if not track_id or not artist_id:
+                continue
+
+            if track_id in seen_track_ids:
+                continue
+
             nb_fan = get_artist_fans(artist_id)
 
             if nb_fan < fan_min:
                 continue
+
             if fan_max is not None and nb_fan >= fan_max:
                 continue
 
-            return track, artist_id, nb_fan
+            # Artist diversity
+            if artist_id in seen_artists:
+                continue
 
-    return None, None, None
+            seen_track_ids.add(track_id)
+            seen_artists.add(artist_id)
+
+            candidates.append(
+                (track, artist_id, nb_fan)
+            )
+
+    return candidates
+
+
+def get_random_common_track():
+    """
+    Common = genuinely obscure artists.
+    """
+
+    candidates = get_candidate_tracks(
+        fan_min=0,
+        fan_max=10_000,
+        searches=18
+    )
+
+    if not candidates:
+        return None, None, None
+
+    return random.choice(candidates)
+
+
+def get_random_tiered_track(fan_min, fan_max):
+    """
+    Random track for any tier.
+    """
+
+    candidates = get_candidate_tracks(
+        fan_min=fan_min,
+        fan_max=fan_max,
+        searches=15
+    )
+
+    if not candidates:
+        return None, None, None
+
+    # Random choice from entire pool
+    return random.choice(candidates)
 
 
 # ── Routes ─────────────────────────────────────────────────────────────────────
 
-@app.route('/search')
-def search_song():
-    query = request.args.get('q')
-    if not query:
-        return jsonify({"error": "Missing query"}), 400
-
-    try:
-        deezer_resp = requests.get(f"https://api.deezer.com/search?q={query}", timeout=5).json()
-    except Exception:
-        return jsonify({"error": "Deezer request failed"}), 502
-
-    raw_results = deezer_resp.get('data')
-    if not raw_results:
-        return jsonify({"error": "No results"}), 404
-
-    results = []
-    for track in raw_results:
-        results.append(build_track_result(track))
-        if len(results) >= MAX_RESULTS:
-            break
-
-    return jsonify({"results": results})
-
-
 @app.route('/random')
 def random_song():
+
     tier = request.args.get('tier', 'Common')
-    fan_min, fan_max = TIER_FAN_RANGES.get(tier, (0, None))
+
+    if tier not in TIER_FAN_RANGES:
+        return jsonify({
+            "error": "Invalid tier"
+        }), 400
+
+    fan_min, fan_max = TIER_FAN_RANGES[tier]
 
     if tier == "Common":
         track, artist_id, nb_fan = get_random_common_track()
-        if track:
-            return jsonify({"result": build_track_result(track, artist_id=artist_id, nb_fan=nb_fan)})
     else:
-        track, artist_id, nb_fan = get_random_tiered_track(fan_min, fan_max)
-        if track:
-            return jsonify({"result": build_track_result(track, artist_id=artist_id, nb_fan=nb_fan)})
+        track, artist_id, nb_fan = get_random_tiered_track(
+            fan_min,
+            fan_max
+        )
 
-    return jsonify({"error": "Could not find a track after several attempts, try again"}), 503
+    if not track:
+        return jsonify({
+            "error": "No track found"
+        }), 503
+
+    return jsonify({
+        "result": build_track_result(
+            track,
+            artist_id=artist_id,
+            nb_fan=nb_fan
+        )
+    })

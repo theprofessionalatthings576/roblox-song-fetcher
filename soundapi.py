@@ -250,39 +250,38 @@ def get_random_track_for_tier(fan_min, fan_max):
 
 # ── Routes ─────────────────────────────────────────────────────────────────────
 
-@app.route('/search')
-def search_song():
+@app.route('/artist_search')
+def artist_search():
     query = request.args.get('q')
-
+ 
     if not query:
         return jsonify({"error": "Missing query"}), 400
-
+ 
     try:
         deezer_resp = requests.get(
-            f"https://api.deezer.com/search?q={query}",
+            f"https://api.deezer.com/search/artist?q={query}&limit=10",
             timeout=5
         ).json()
-
+ 
     except Exception:
         return jsonify({"error": "Deezer request failed"}), 502
-
+ 
     raw_results = deezer_resp.get("data")
-
+ 
     if not raw_results:
         return jsonify({"error": "No results"}), 404
-
+ 
     results = []
-
-    for track in raw_results:
-
-        results.append(
-            build_track_result(track)
-        )
-
-        if len(results) >= MAX_RESULTS:
-            break
-
+ 
+    for artist in raw_results:
+        results.append({
+            "id":     str(artist.get("id", "")),
+            "name":   censor(artist.get("name", "Unknown")),
+            "nb_fan": int(artist.get("nb_fan", 0)),
+        })
+ 
     return jsonify({"results": results})
+ 
 
 
 @app.route('/random')

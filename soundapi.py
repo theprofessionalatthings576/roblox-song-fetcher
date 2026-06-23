@@ -132,32 +132,21 @@ def search_song():
 
     return jsonify({"results": results})
 
-
-# Chart-based pool for high tiers - guaranteed popular artists
-TIER_CHART_URLS = {
-    "Legendary": "https://api.deezer.com/chart/0/tracks?limit=100",
-    "Epic":      "https://api.deezer.com/chart/0/tracks?limit=100",
-    "Rare":      "https://api.deezer.com/chart/0/tracks?limit=100",
+TIER_FAN_RANGES = {
+    "Legendary": (10_000_000, None),   # 10M+ fans
+    "Epic":      (1_000_000, 10_000_000),
+    "Rare":      (100_000, 1_000_000),
+    "Uncommon":  (10_000, 100_000),
+    "Common":    (0, 10_000),
 }
 
 @app.route('/random')
 def random_song():
-    tier = request.args.get('tier', 'Common')  # Roblox passes the rolled tier
+    tier = request.args.get('tier', 'Common')
     max_id = get_anchor_max_id()
 
-    # High tiers: sample from Deezer charts (all real popular artists)
-    if tier in TIER_CHART_URLS:
-        try:
-            resp = requests.get(TIER_CHART_URLS[tier], timeout=5).json()
-            tracks = resp.get("data", [])
-            if tracks:
-                track = random.choice(tracks)
-                artist_id = track.get("artist", {}).get("id")
-                return jsonify({"result": build_track_result(track, artist_id=artist_id)})
-        except Exception:
-            pass  # fall through to random ID as last resort
+    fan_min, fan_max = TIER_FAN_RANGES.get(tier, (0, None))
 
-    # Common/Uncommon: blind random ID sampling (obscure catalog)
     for _ in range(RANDOM_MAX_ATTEMPTS):
         track_id = random.randint(1, max_id)
         try:
@@ -168,7 +157,17 @@ def random_song():
         if not resp or resp.get("error") or not resp.get("title") or not resp.get("artist"):
             continue
 
+        if is_explicit(resp):
+            continue
+
         artist_id = resp.get("artist", {}).get("id")
+        nb_fan = get_artist_fans(artist_id)
+
+        if nb_fan < fan_min:
+            continue
+        if fan_max is not None and nb_fan >= fan_max:
+            continue
+
         return jsonify({"result": build_track_result(resp, artist_id=artist_id)})
 
     return jsonify({"error": "Could not find a track after several attempts, try again"}), 503

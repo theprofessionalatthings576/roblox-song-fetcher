@@ -250,37 +250,58 @@ def get_random_track_for_tier(fan_min, fan_max):
 
 # ── Routes ─────────────────────────────────────────────────────────────────────
 
+# ── Paste both routes into your existing app.py ───────────────────────────────
+
 @app.route('/artist_search')
 def artist_search():
     query = request.args.get('q')
- 
     if not query:
         return jsonify({"error": "Missing query"}), 400
- 
+
     try:
         deezer_resp = requests.get(
             f"https://api.deezer.com/search/artist?q={query}&limit=10",
             timeout=5
         ).json()
- 
     except Exception:
         return jsonify({"error": "Deezer request failed"}), 502
- 
+
     raw_results = deezer_resp.get("data")
- 
     if not raw_results:
         return jsonify({"error": "No results"}), 404
- 
+
     results = []
- 
     for artist in raw_results:
         results.append({
             "id":     str(artist.get("id", "")),
             "name":   censor(artist.get("name", "Unknown")),
             "nb_fan": int(artist.get("nb_fan", 0)),
         })
- 
+
     return jsonify({"results": results})
+
+
+@app.route('/artist_tracks')
+def artist_tracks():
+    artist_id = request.args.get('id')
+    if not artist_id:
+        return jsonify({"error": "Missing id"}), 400
+
+    try:
+        # Fetch the artist's top tracks (up to 50)
+        deezer_resp = requests.get(
+            f"https://api.deezer.com/artist/{artist_id}/top?limit=50",
+            timeout=5
+        ).json()
+    except Exception:
+        return jsonify({"error": "Deezer request failed"}), 502
+
+    tracks = [t for t in deezer_resp.get("data", []) if not is_explicit(t)]
+    if not tracks:
+        return jsonify({"error": "No suitable tracks found"}), 404
+
+    track = random.choice(tracks)
+    return jsonify({"result": build_track_result(track)})
  
 
 

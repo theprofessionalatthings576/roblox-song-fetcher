@@ -137,10 +137,6 @@ def build_track_result(track_data, artist_id=None, nb_fan=None):
 
 # ── Track sourcing ─────────────────────────────────────────────────────────────
 
-# ── Track sourcing ─────────────────────────────────────────────────────────────
-
-# ── Track sourcing ─────────────────────────────────────────────────────────────
-
 def generate_random_seed():
     """
     Generate either a single seed or a two-word seed phrase.
@@ -250,8 +246,6 @@ def get_random_track_for_tier(fan_min, fan_max):
 
 # ── Routes ─────────────────────────────────────────────────────────────────────
 
-# ── Paste both routes into your existing app.py ───────────────────────────────
-
 @app.route('/artist_search')
 def artist_search():
     query = request.args.get('q')
@@ -302,7 +296,107 @@ def artist_tracks():
 
     track = random.choice(tracks)
     return jsonify({"result": build_track_result(track)})
- 
+
+
+ARTIST_SONGS_TTL_SECONDS = 86400  # discographies rarely change, cache for a day
+MAX_ALBUMS_PER_ARTIST = 40        # bound worst-case request count for huge back catalogs
+
+_artist_songs_cache = {}  # artist_id -> {"timestamp": ..., "songs": [...]}
+
+
+def get_artist_albums(artist_id):
+    albums = []
+    try:
+        resp = requests.get(
+            f"https://api.deezer.com/artist/{artist_id}/albums?limit={MAX_ALBUMS_PER_ARTIST}",
+            timeout=5
+        ).json()
+        albums = resp.get("data", [])
+    except Exception:
+        pass
+    return albums
+
+
+def get_album_tracks(album_id):
+    tracks = []
+    try:
+        resp = requests.get(
+            f"https://api.deezer.com/album/{album_id}/tracks?limit=100",
+            timeout=5
+        ).json()
+        tracks = resp.get("data", [])
+    except Exception:
+        pass
+    return tracks
+
+
+@app.route('/artist_songs')
+def artist_songs():
+    """
+    Full deduped song list for an artist, built by walking their entire
+    discography (every album, every album's tracklist) rather than just
+    the top-50 tracks. Used by the collection index to compute an
+    accurate owned/total progress count.
+    """
+    artist_id = request.args.get('id')
+    if not artist_id:
+        return jsonify({"error": "Missing id"}), 400
+
+    cached = _artist_songs_cache.get(artist_id)
+    now = time.time()
+    if cached and (now - cached["timestamp"] < ARTIST_SONGS_TTL_SECONDS):
+        songs = cached["songs"]
+        return jsonify({
+            "artist_id": artist_id,
+            "total": len(songs),
+            "songs": songs,
+        })
+
+    albums = get_artist_albums(artist_id)
+    if not albums:
+        return jsonify({"error": "No albums found"}), 404
+
+    seen_titles = set()
+    songs = []
+
+    for album in albums:
+        album_id = album.get("id")
+        album_title = album.get("title", "")
+
+        if not album_id:
+            continue
+
+        for track in get_album_tracks(album_id):
+            if is_explicit(track):
+                continue
+
+            title = track.get("title", "")
+            title_key = title.lower().strip()
+
+            if not title_key or title_key in seen_titles:
+                continue
+
+            seen_titles.add(title_key)
+
+            songs.append({
+                "id":    track.get("id"),
+                "title": censor(title),
+                "album": censor(album_title),
+            })
+
+    if not songs:
+        return jsonify({"error": "No suitable tracks found"}), 404
+
+    _artist_songs_cache[artist_id] = {
+        "timestamp": now,
+        "songs": songs,
+    }
+
+    return jsonify({
+        "artist_id": artist_id,
+        "total": len(songs),
+        "songs": songs,
+    })
 
 
 @app.route('/random')

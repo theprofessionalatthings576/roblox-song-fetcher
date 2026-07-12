@@ -42,6 +42,11 @@ SEARCH_SEEDS = [
     "all", "yours", "beside", "under", "over", "yes", "no", "not", "win", "lose", "end", 
 ]
 
+TOP_ARTIST_IDS = [
+    "13",  "4050205", "12246", "1176900", "145468192", "10799102", "259", "9635624", "1562681", "6982223",   # example Deezer artist IDs
+    # ...fill in verified IDs for artists you want guaranteed to appear
+]
+
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -329,30 +334,22 @@ def get_album_tracks(album_id):
     except Exception:
         pass
     return tracks
+
 @app.route('/popular_artists')
 def popular_artists():
-    try:
-        resp = requests.get(
-            "https://api.deezer.com/chart/0/artists?limit=10",
-            timeout=5
-        ).json()
-    except Exception:
-        return jsonify({"error": "Deezer request failed"}), 502
-
-    raw_results = resp.get("data")
-    if not raw_results:
-        return jsonify({"error": "No results"}), 404
-
     results = []
-    for artist in raw_results:
-        results.append({
-            "id":     str(artist.get("id", "")),
-            "name":   censor(artist.get("name", "Unknown")),
-            "nb_fan": int(artist.get("nb_fan", 0)),
-        })
+    for artist_id in TOP_ARTIST_IDS:
+        try:
+            resp = requests.get(f"https://api.deezer.com/artist/{artist_id}", timeout=5).json()
+            results.append({
+                "id": str(resp.get("id", "")),
+                "name": censor(resp.get("name", "Unknown")),
+                "nb_fan": int(resp.get("nb_fan", 0)),
+            })
+        except Exception:
+            continue
 
     results.sort(key=lambda a: a["nb_fan"], reverse=True)
-
     return jsonify({"results": results})
 
 @app.route('/artist_songs')

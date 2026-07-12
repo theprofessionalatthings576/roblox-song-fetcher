@@ -246,6 +246,7 @@ def get_random_track_for_tier(fan_min, fan_max):
 
 # ── Routes ─────────────────────────────────────────────────────────────────────
 
+
 @app.route('/artist_search')
 def artist_search():
     query = request.args.get('q')
@@ -328,7 +329,31 @@ def get_album_tracks(album_id):
     except Exception:
         pass
     return tracks
+@app.route('/popular_artists')
+def popular_artists():
+    try:
+        resp = requests.get(
+            "https://api.deezer.com/chart/0/artists?limit=10",
+            timeout=5
+        ).json()
+    except Exception:
+        return jsonify({"error": "Deezer request failed"}), 502
 
+    raw_results = resp.get("data")
+    if not raw_results:
+        return jsonify({"error": "No results"}), 404
+
+    results = []
+    for artist in raw_results:
+        results.append({
+            "id":     str(artist.get("id", "")),
+            "name":   censor(artist.get("name", "Unknown")),
+            "nb_fan": int(artist.get("nb_fan", 0)),
+        })
+
+    results.sort(key=lambda a: a["nb_fan"], reverse=True)
+
+    return jsonify({"results": results})
 
 @app.route('/artist_songs')
 def artist_songs():

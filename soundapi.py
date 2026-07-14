@@ -37,9 +37,12 @@ SEARCH_SEEDS = [
     "always", "maybe", "again", "away", "back", "down", "up", "together", "alone",
     "baby", "girl", "boy", "man", "woman", "king", "queen", "angel", "devil", "ghost",
     "rock", "roll", "beat", "bass", "melody", "rhythm", "song", "music", "world", "city",
-    "one", "but", "where", "when", "why", "who", 
+    "one", "but", "where", "when", "why", "who", "which", "turquoise", "pink", "girl",
     "his", "her", "their", "you", "your", "him", "hers", "on", "in", "at", "ever", "if", 
     "all", "yours", "beside", "under", "over", "yes", "no", "not", "win", "lose", "end", 
+    "cat", "dog", "meow", "woof", "song", "home", "house", "the", "and", "or", "that",
+    "yep", "1", "2", "3", "4", "5", "6", "7", "8", "9", "car", "maybe", "me", "take",
+    "wherever", "whenever", "whom", "concern", "john", "jack", "crazy", "emotional",
 ]
 
 TOP_ARTIST_IDS = [

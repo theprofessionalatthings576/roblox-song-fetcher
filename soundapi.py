@@ -158,7 +158,26 @@ def generate_random_seed():
         f"{random.choice(SEARCH_SEEDS)}"
     )
 
+def get_rarity_from_fan_count(nb_fan):
+    for tier, (fan_min, fan_max) in TIER_FAN_RANGES.items():
+        if nb_fan >= fan_min and (fan_max is None or nb_fan < fan_max):
+            return tier
+    return "Common"
 
+
+def get_artist_primary_genre(albums):
+    """Most common genre across the artist's albums, used as a stand-in
+    for a single 'artist genre' since Deezer only tags genre per-album."""
+    from collections import Counter
+    genre_counts = Counter()
+    for album in albums:
+        genre_name = get_genre(album.get("id"))
+        if genre_name and genre_name != "Unknown":
+            genre_counts[genre_name] += 1
+    if not genre_counts:
+        return "Unknown"
+    return genre_counts.most_common(1)[0][0]
+    
 def get_candidate_tracks(
     fan_min,
     fan_max,
@@ -357,12 +376,6 @@ def popular_artists():
 
 @app.route('/artist_songs')
 def artist_songs():
-    """
-    Full deduped song list for an artist, built by walking their entire
-    discography (every album, every album's tracklist) rather than just
-    the top-50 tracks. Used by the collection index to compute an
-    accurate owned/total progress count.
-    """
     artist_id = request.args.get('id')
     if not artist_id:
         return jsonify({"error": "Missing id"}), 400
@@ -375,6 +388,8 @@ def artist_songs():
             "artist_id": artist_id,
             "total": len(songs),
             "songs": songs,
+            "rarity": cached["rarity"],
+            "genre": cached["genre"],
         })
 
     albums = get_artist_albums(artist_id)
@@ -412,17 +427,24 @@ def artist_songs():
     if not songs:
         return jsonify({"error": "No suitable tracks found"}), 404
 
+    nb_fan = get_artist_fans(artist_id)
+    rarity = get_rarity_from_fan_count(nb_fan)
+    genre = get_artist_primary_genre(albums)
+
     _artist_songs_cache[artist_id] = {
         "timestamp": now,
         "songs": songs,
+        "rarity": rarity,
+        "genre": genre,
     }
 
     return jsonify({
         "artist_id": artist_id,
         "total": len(songs),
         "songs": songs,
+        "rarity": rarity,
+        "genre": genre,
     })
-
 
 @app.route('/random')
 def random_song():

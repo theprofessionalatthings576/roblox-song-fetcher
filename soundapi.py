@@ -126,25 +126,20 @@ def get_anchor_max_id():
 
     return _anchor_cache["max_id"] or 4_000_000_000
 
-def deezer_get(url, max_retries=3):
-    """GET a Deezer URL, retrying on quota errors. Returns parsed JSON dict,
-    or None if the request ultimately failed / was throttled out."""
+def deezer_get(url, max_retries=2):
     for attempt in range(max_retries):
         try:
             resp = requests.get(url, timeout=5).json()
         except Exception:
             return None
-
         err = resp.get("error")
         if err:
-            # Deezer quota errors are typically code 4 ("Quota limit exceeded")
             if err.get("code") == 4 and attempt < max_retries - 1:
-                time.sleep(0.5 * (attempt + 1))  # backoff: 0.5s, 1s, 1.5s
-                continue
-            return None  # some other API error, or out of retries
-
-        return resp
-
+                time.sleep(0.3)
+            else:
+                return None
+        else:
+            return resp
     return None
     
 def build_track_result(track_data, artist_id=None, nb_fan=None):
@@ -380,6 +375,8 @@ def popular_artists():
     results.sort(key=lambda a: a["nb_fan"], reverse=True)
     return jsonify({"results": results})
 
+ARTIST_SONGS_TIME_BUDGET = 18  # seconds — stay safely under Render/Roblox timeouts
+
 @app.route('/artist_songs')
 def artist_songs():
     artist_id = request.args.get('id')
@@ -388,7 +385,7 @@ def artist_songs():
 
     cached = _artist_songs_cache.get(artist_id)
     now = time.time()
-    if cached and (now - cached["timestamp"] < ARTIST_SONGS_TTL_SECONDS):
+    if cached and (now - cached["timestamp"] < ARTIST_SONGS_TTL_SECONDS) and not cached.get("partial"):
         songs = cached["songs"]
         return jsonify({
             "artist_id": artist_id,
@@ -404,27 +401,27 @@ def artist_songs():
 
     seen_titles = set()
     songs = []
+    start_time = time.time()
+    hit_time_budget = False
 
     for album in albums:
+        if time.time() - start_time > ARTIST_SONGS_TIME_BUDGET:
+            hit_time_budget = True
+            break
+
         album_id = album.get("id")
         album_title = album.get("title", "")
-
         if not album_id:
             continue
 
         for track in get_album_tracks(album_id):
-            time.sleep(0.1)
             if is_explicit(track):
                 continue
-
             title = track.get("title", "")
             title_key = title.lower().strip()
-
             if not title_key or title_key in seen_titles:
                 continue
-
             seen_titles.add(title_key)
-
             songs.append({
                 "id":    track.get("id"),
                 "title": censor(title),
@@ -438,12 +435,17 @@ def artist_songs():
     rarity = get_rarity_from_fan_count(nb_fan)
     genre = get_artist_primary_genre(albums)
 
+    # Only cache (and only for the full TTL) if we actually got everything.
+    # Partial results get a short TTL so a retry soon can fill in the rest.
     _artist_songs_cache[artist_id] = {
         "timestamp": now,
         "songs": songs,
         "rarity": rarity,
         "genre": genre,
+        "partial": hit_time_budget,
     }
+    if hit_time_budget:
+        _artist_songs_cache[artist_id]["timestamp"] = now - ARTIST_SONGS_TTL_SECONDS + 60  # expires in ~60s
 
     return jsonify({
         "artist_id": artist_id,
@@ -451,6 +453,7 @@ def artist_songs():
         "songs": songs,
         "rarity": rarity,
         "genre": genre,
+        "partial": hit_time_budget,
     })
 
 @app.route('/random')

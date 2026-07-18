@@ -126,7 +126,27 @@ def get_anchor_max_id():
 
     return _anchor_cache["max_id"] or 4_000_000_000
 
+def deezer_get(url, max_retries=3):
+    """GET a Deezer URL, retrying on quota errors. Returns parsed JSON dict,
+    or None if the request ultimately failed / was throttled out."""
+    for attempt in range(max_retries):
+        try:
+            resp = requests.get(url, timeout=5).json()
+        except Exception:
+            return None
 
+        err = resp.get("error")
+        if err:
+            # Deezer quota errors are typically code 4 ("Quota limit exceeded")
+            if err.get("code") == 4 and attempt < max_retries - 1:
+                time.sleep(0.5 * (attempt + 1))  # backoff: 0.5s, 1s, 1.5s
+                continue
+            return None  # some other API error, or out of retries
+
+        return resp
+
+    return None
+    
 def build_track_result(track_data, artist_id=None, nb_fan=None):
     resolved_artist_id = artist_id or track_data.get("artist", {}).get("id")
     album_id = track_data.get("album", {}).get("id")
@@ -333,29 +353,15 @@ _artist_songs_cache = {}  # artist_id -> {"timestamp": ..., "songs": [...]}
 
 
 def get_artist_albums(artist_id):
-    albums = []
-    try:
-        resp = requests.get(
-            f"https://api.deezer.com/artist/{artist_id}/albums?limit={MAX_ALBUMS_PER_ARTIST}",
-            timeout=5
-        ).json()
-        albums = resp.get("data", [])
-    except Exception:
-        pass
-    return albums
+    resp = deezer_get(
+        f"https://api.deezer.com/artist/{artist_id}/albums?limit={MAX_ALBUMS_PER_ARTIST}"
+    )
+    return resp.get("data", []) if resp else []
 
 
 def get_album_tracks(album_id):
-    tracks = []
-    try:
-        resp = requests.get(
-            f"https://api.deezer.com/album/{album_id}/tracks?limit=100",
-            timeout=5
-        ).json()
-        tracks = resp.get("data", [])
-    except Exception:
-        pass
-    return tracks
+    resp = deezer_get(f"https://api.deezer.com/album/{album_id}/tracks?limit=100")
+    return resp.get("data", []) if resp else []
 
 @app.route('/popular_artists')
 def popular_artists():
@@ -407,6 +413,7 @@ def artist_songs():
             continue
 
         for track in get_album_tracks(album_id):
+            time.sleep(0.1)
             if is_explicit(track):
                 continue
 

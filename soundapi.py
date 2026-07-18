@@ -45,6 +45,8 @@ SEARCH_SEEDS = [
     "wherever", "whenever", "whom", "concern", "john", "jack", "crazy", "emotional",
 ]
 
+ALBUM_TYPE_PRIORITY = {"album": 0, "ep": 1, "compilation": 1, "single": 2}
+
 TOP_ARTIST_IDS = [
     "13",  "4050205", "12246", "1176900", "145468192", "10799102", "259", "9635624", "1562681", "6982223",   # example Deezer artist IDs
     # ...fill in verified IDs for artists you want guaranteed to appear

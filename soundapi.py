@@ -347,8 +347,6 @@ MAX_ALBUMS_PER_ARTIST = 40        # bound worst-case request count for huge back
 _artist_songs_cache = {}  # artist_id -> {"timestamp": ..., "songs": [...]}
 
 
-ALBUM_TYPE_PRIORITY = {"album": 0, "ep": 1, "compilation": 1, "single": 2}
-
 def get_artist_albums(artist_id):
     all_albums = []
     index = 0
@@ -368,11 +366,12 @@ def get_artist_albums(artist_id):
             break  # last page
         index += page_size
 
-    # Make sure full albums win over singles/EPs when we apply the cap,
-    # instead of just taking whatever came first by release date.
+    print(f"[get_artist_albums] artist {artist_id}: fetched {len(all_albums)} releases")
+    for album in all_albums:
+        print(f"  -> record_type={album.get('record_type')!r}  title={album.get('title')!r}")
+
     all_albums.sort(key=lambda a: ALBUM_TYPE_PRIORITY.get(a.get("record_type", ""), 1))
     return all_albums[:MAX_ALBUMS_PER_ARTIST]
-
 
 def get_album_tracks(album_id):
     resp = deezer_get(f"https://api.deezer.com/album/{album_id}/tracks?limit=100")

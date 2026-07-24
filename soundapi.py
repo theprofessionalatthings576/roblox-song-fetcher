@@ -63,7 +63,7 @@ def get_genre(album_id):
 
     genre_name = "Unknown"
     try:
-        resp = requests.get(f"https://api.deezer.com/album/{album_id}", timeout=5).json()
+        resp = _deezer_session.get(f"https://api.deezer.com/album/{album_id}", timeout=5).json()
         genres = resp.get("genres", {}).get("data", [])
         if genres:
             genre_name = genres[0].get("name", "Unknown")
@@ -81,8 +81,8 @@ def get_artist_fans(artist_id):
     if artist_id in _artist_fan_cache:
         return _artist_fan_cache[artist_id]
 
-    try:
-        resp = requests.get(
+   try:
+        resp = _deezer_session.get(
             f"https://api.deezer.com/artist/{artist_id}",
             timeout=5
         ).json()
@@ -131,7 +131,7 @@ def get_anchor_max_id():
 def deezer_get(url, max_retries=2):
     for attempt in range(max_retries):
         try:
-            resp = requests.get(url, timeout=5).json()
+            resp = _deezer_session.get(url, timeout=5).json()
         except Exception:
             return None
         err = resp.get("error")

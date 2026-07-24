@@ -16,6 +16,10 @@ _anchor_cache = {"max_id": None, "timestamp": 0}
 _genre_cache = {}
 _artist_fan_cache = {}
 
+# Persistent session for connection pooling — reused across all Deezer calls
+_deezer_session = requests.Session()
+_deezer_session.headers.update({"User-Agent": "collect-songs-bridge/1.0"})
+
 TIER_FAN_RANGES = {
     "Legendary": (10_000_000, None),
     "Epic":      (1_000_000, 10_000_000),
@@ -81,7 +85,7 @@ def get_artist_fans(artist_id):
     if artist_id in _artist_fan_cache:
         return _artist_fan_cache[artist_id]
 
-   try:
+    try:
         resp = _deezer_session.get(
             f"https://api.deezer.com/artist/{artist_id}",
             timeout=5
@@ -215,7 +219,7 @@ def get_candidate_tracks(
         offset = random.randint(0, 10) * 25
 
         try:
-            resp = requests.get(
+            resp = _deezer_session.get(
                 f"https://api.deezer.com/search"
                 f"?q={seed}"
                 f"&limit=25"

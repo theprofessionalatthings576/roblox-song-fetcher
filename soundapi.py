@@ -47,6 +47,18 @@ SEARCH_SEEDS = [
     "cat", "dog", "meow", "woof", "song", "home", "house", "the", "and", "or", "that",
     "yep", "1", "2", "3", "4", "5", "6", "7", "8", "9", "car", "maybe", "me", "take",
     "wherever", "whenever", "whom", "concern", "john", "jack", "crazy", "emotional",
+    "feat", "version", "bill", "upside", "fish", "food", "banana", "lemon", "american",
+    "british", "race", "better", "worse", "worst", "best", "earth", "hey", "hi", "hello",
+    "hopped", "mr", "mrs", "island", "kiss", "tonight", "today", "tomorrow", "clock",
+    "america", "police", "gun", "drugs", "money", "dollars", "wasn't", "isn't", "weren't",
+    "won't", "can't", "don't", "tryna", "gonna", "finna", "yo", "0", "downside", "wishing",
+    "daughter", "son", "mother", "father", "u", "da", "boi", "lil", "wit", "oops", "bro", 
+    "dawg", "cuh", "rizz", "lowkey", "you're", "forever", "infinity", "infinite", "nostalgia", 
+    "memories", "memory", "dj", "gal", "bros", "!", ".", ",", "stupid", "idiot", "heads", "feet",
+    "drinks", "event", "movie", "film", "drinking", "date", "party", "parties", "life", "live", 
+    "sorry", "changes", "new york", "london", "paris", "pump", "shut up", "king", "doctor", "prince",
+    "queen", "legend", "top", "bottom", "above", "beyond", "below", "innit", "bruv", "mate", "champion", 
+    "oi", "howdy", "hai", "hella", "darn", "god", "jesus", "lord", "town", "city", "phone", "cellphone", 
 ]
 
 ALBUM_TYPE_PRIORITY = {"album": 0, "ep": 1, "compilation": 1, "single": 2}

@@ -15,6 +15,7 @@ ANCHOR_TTL_SECONDS = 3600
 _anchor_cache = {"max_id": None, "timestamp": 0}
 _genre_cache = {}
 _artist_fan_cache = {}
+_artist_name_cache = {}  # NEW: artist_id -> display name, same caching pattern as fan count
 
 # Persistent session for connection pooling — reused across all Deezer calls
 _deezer_session = requests.Session()
@@ -42,8 +43,8 @@ SEARCH_SEEDS = [
     "baby", "girl", "boy", "man", "woman", "king", "queen", "angel", "devil", "ghost",
     "rock", "roll", "beat", "bass", "melody", "rhythm", "song", "music", "world", "city",
     "one", "but", "where", "when", "why", "who", "which", "turquoise", "pink", "girl",
-    "his", "her", "their", "you", "your", "him", "hers", "on", "in", "at", "ever", "if", 
-    "all", "yours", "beside", "under", "over", "yes", "no", "not", "win", "lose", "end", 
+    "his", "her", "their", "you", "your", "him", "hers", "on", "in", "at", "ever", "if",
+    "all", "yours", "beside", "under", "over", "yes", "no", "not", "win", "lose", "end",
     "cat", "dog", "meow", "woof", "song", "home", "house", "the", "and", "or", "that",
     "yep", "1", "2", "3", "4", "5", "6", "7", "8", "9", "car", "maybe", "me", "take",
     "wherever", "whenever", "whom", "concern", "john", "jack", "crazy", "emotional",
@@ -52,13 +53,13 @@ SEARCH_SEEDS = [
     "hopped", "mr", "mrs", "island", "kiss", "tonight", "today", "tomorrow", "clock",
     "america", "police", "gun", "drugs", "money", "dollars", "wasn't", "isn't", "weren't",
     "won't", "can't", "don't", "tryna", "gonna", "finna", "yo", "0", "downside", "wishing",
-    "daughter", "son", "mother", "father", "u", "da", "boi", "lil", "wit", "oops", "bro", 
-    "dawg", "cuh", "rizz", "lowkey", "you're", "forever", "infinity", "infinite", "nostalgia", 
+    "daughter", "son", "mother", "father", "u", "da", "boi", "lil", "wit", "oops", "bro",
+    "dawg", "cuh", "rizz", "lowkey", "you're", "forever", "infinity", "infinite", "nostalgia",
     "memories", "memory", "dj", "gal", "bros", "!", ".", ",", "stupid", "idiot", "heads", "feet",
-    "drinks", "event", "movie", "film", "drinking", "date", "party", "parties", "life", "live", 
+    "drinks", "event", "movie", "film", "drinking", "date", "party", "parties", "life", "live",
     "sorry", "changes", "new york", "london", "paris", "pump", "shut up", "king", "doctor", "prince",
-    "queen", "legend", "top", "bottom", "above", "beyond", "below", "innit", "bruv", "mate", "champion", 
-    "oi", "howdy", "hai", "hella", "darn", "god", "jesus", "lord", "town", "city", "phone", "cellphone", 
+    "queen", "legend", "top", "bottom", "above", "beyond", "below", "innit", "bruv", "mate", "champion",
+    "oi", "howdy", "hai", "hella", "darn", "god", "jesus", "lord", "town", "city", "phone", "cellphone",
 ]
 
 ALBUM_TYPE_PRIORITY = {"album": 0, "ep": 1, "compilation": 1, "single": 2}
@@ -112,6 +113,29 @@ def get_artist_fans(artist_id):
     return nb_fan
 
 
+def get_artist_name(artist_id):
+    """Cached lookup for an artist's display name. Same request shape as
+    get_artist_fans — hits Deezer's /artist/{id} endpoint once per id."""
+    if not artist_id:
+        return "Unknown Artist"
+
+    if artist_id in _artist_name_cache:
+        return _artist_name_cache[artist_id]
+
+    name = "Unknown Artist"
+    try:
+        resp = _deezer_session.get(
+            f"https://api.deezer.com/artist/{artist_id}",
+            timeout=5
+        ).json()
+        name = censor(resp.get("name", "Unknown Artist"))
+    except Exception:
+        pass
+
+    _artist_name_cache[artist_id] = name
+    return name
+
+
 def is_explicit(track):
     if track.get("explicit_lyrics"):
         return True
@@ -159,7 +183,7 @@ def deezer_get(url, max_retries=2):
         else:
             return resp
     return None
-    
+
 def build_track_result(track_data, artist_id=None, nb_fan=None):
     resolved_artist_id = artist_id or track_data.get("artist", {}).get("id")
     album_id = track_data.get("album", {}).get("id")
@@ -210,7 +234,7 @@ def get_artist_primary_genre(albums):
     if not genre_counts:
         return "Unknown"
     return genre_counts.most_common(1)[0][0]
-    
+
 def get_candidate_tracks(
     fan_min,
     fan_max,
@@ -420,12 +444,17 @@ def artist_songs():
     if not artist_id:
         return jsonify({"error": "Missing id"}), 400
 
+    # NEW: resolve the artist's display name up front — cheap after the
+    # first call since it's cached, and needed either way below.
+    artist_name = get_artist_name(artist_id)
+
     cached = _artist_songs_cache.get(artist_id)
     now = time.time()
     if cached and (now - cached["timestamp"] < ARTIST_SONGS_TTL_SECONDS) and not cached.get("partial"):
         songs = cached["songs"]
         return jsonify({
             "artist_id": artist_id,
+            "artist_name": artist_name,  # NEW
             "total": len(songs),
             "songs": songs,
             "rarity": cached["rarity"],
@@ -486,6 +515,7 @@ def artist_songs():
 
     return jsonify({
         "artist_id": artist_id,
+        "artist_name": artist_name,  # NEW
         "total": len(songs),
         "songs": songs,
         "rarity": rarity,

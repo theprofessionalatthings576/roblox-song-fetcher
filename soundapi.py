@@ -9,15 +9,13 @@ app = Flask(__name__)
 profanity.load_censor_words()
 
 MAX_RESULTS = 10
-RANDOM_MAX_ATTEMPTS = 25
 ANCHOR_TTL_SECONDS = 3600
+ARTIST_INFO_TTL_SECONDS = 3600  # fan counts / names refresh hourly instead of forever
 
-_anchor_cache = {"max_id": None, "timestamp": 0}
 _genre_cache = {}
-_artist_fan_cache = {}
-_artist_name_cache = {}  # NEW: artist_id -> display name, same caching pattern as fan count
+_artist_info_cache = {}  # artist_id -> {"timestamp", "name", "nb_fan"}
 
-# Persistent session for connection pooling — reused across all Deezer calls
+# Persistent session for connection pooling — reused across ALL Deezer calls now
 _deezer_session = requests.Session()
 _deezer_session.headers.update({"User-Agent": "collect-songs-bridge/1.0"})
 
@@ -70,6 +68,37 @@ TOP_ARTIST_IDS = [
 ]
 
 
+# ── Core Deezer request helper (single source of truth for retries/params) ────
+
+def deezer_get(path_or_url, params=None, max_retries=3, base_url="https://api.deezer.com"):
+    """
+    Every Deezer call should go through this. Handles:
+    - connection pooling via the shared session
+    - proper query-string encoding via `params` (never hand-build URLs)
+    - retry-with-backoff on Deezer's rate-limit error (code 4)
+    Returns the parsed JSON dict on success, or None if the call ultimately
+    failed — callers should always check for None rather than assume a shape.
+    """
+    url = path_or_url if path_or_url.startswith("http") else f"{base_url}{path_or_url}"
+
+    for attempt in range(max_retries):
+        try:
+            resp = _deezer_session.get(url, params=params, timeout=5).json()
+        except Exception:
+            return None
+
+        err = resp.get("error")
+        if not err:
+            return resp
+
+        if err.get("code") == 4 and attempt < max_retries - 1:
+            time.sleep(0.3 * (attempt + 1))  # small backoff instead of flat 0.3s
+            continue
+        return None
+
+    return None
+
+
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 def get_genre(album_id):
@@ -79,61 +108,56 @@ def get_genre(album_id):
         return _genre_cache[album_id]
 
     genre_name = "Unknown"
-    try:
-        resp = _deezer_session.get(f"https://api.deezer.com/album/{album_id}", timeout=5).json()
+    resp = deezer_get(f"/album/{album_id}")
+    if resp:
         genres = resp.get("genres", {}).get("data", [])
         if genres:
             genre_name = genres[0].get("name", "Unknown")
-    except Exception:
-        pass
 
     _genre_cache[album_id] = genre_name
     return genre_name
 
 
+def get_artist_info(artist_id):
+    """
+    Single cached lookup for everything /artist/{id} gives us (fan count +
+    display name). Replaces the old get_artist_fans/get_artist_name pair,
+    which each hit the same endpoint separately and doubled Deezer calls.
+    TTL'd so fan counts (and therefore rarity tiers) don't lock in stale
+    values forever — previously these caches never expired.
+    """
+    now = time.time()
+    cached = _artist_info_cache.get(artist_id)
+    if cached and (now - cached["timestamp"] < ARTIST_INFO_TTL_SECONDS):
+        return cached
+
+    info = {"timestamp": now, "name": "Unknown Artist", "nb_fan": 0}
+    if artist_id:
+        resp = deezer_get(f"/artist/{artist_id}")
+        if resp:
+            info["name"] = censor(resp.get("name", "Unknown Artist"))
+            info["nb_fan"] = int(resp.get("nb_fan", 0) or 0)
+        # If the call failed (rate-limited, network error, etc.) and we have
+        # a previous good value cached, keep serving that instead of
+        # collapsing to "Unknown Artist" / 0 — this is what was silently
+        # happening before.
+        elif cached:
+            return cached
+
+    _artist_info_cache[artist_id] = info
+    return info
+
+
 def get_artist_fans(artist_id):
     if not artist_id:
         return 0
-
-    if artist_id in _artist_fan_cache:
-        return _artist_fan_cache[artist_id]
-
-    try:
-        resp = _deezer_session.get(
-            f"https://api.deezer.com/artist/{artist_id}",
-            timeout=5
-        ).json()
-
-        nb_fan = int(resp.get("nb_fan", 0))
-
-    except Exception:
-        nb_fan = 0
-
-    _artist_fan_cache[artist_id] = nb_fan
-    return nb_fan
+    return get_artist_info(artist_id)["nb_fan"]
 
 
 def get_artist_name(artist_id):
-    """Cached lookup for an artist's display name. Same request shape as
-    get_artist_fans — hits Deezer's /artist/{id} endpoint once per id."""
     if not artist_id:
         return "Unknown Artist"
-
-    if artist_id in _artist_name_cache:
-        return _artist_name_cache[artist_id]
-
-    name = "Unknown Artist"
-    try:
-        resp = _deezer_session.get(
-            f"https://api.deezer.com/artist/{artist_id}",
-            timeout=5
-        ).json()
-        name = censor(resp.get("name", "Unknown Artist"))
-    except Exception:
-        pass
-
-    _artist_name_cache[artist_id] = name
-    return name
+    return get_artist_info(artist_id)["name"]
 
 
 def is_explicit(track):
@@ -150,52 +174,20 @@ def censor(text):
     return profanity.censor(text)
 
 
-def get_anchor_max_id():
-    now = time.time()
-    if _anchor_cache["max_id"] and (now - _anchor_cache["timestamp"] < ANCHOR_TTL_SECONDS):
-        return _anchor_cache["max_id"]
-
-    try:
-        resp = requests.get("https://api.deezer.com/chart/0/tracks?limit=50", timeout=5).json()
-        track_ids = [t["id"] for t in resp.get("data", []) if "id" in t]
-        if track_ids:
-            anchor = int(max(track_ids) * 1.2)
-            _anchor_cache["max_id"] = anchor
-            _anchor_cache["timestamp"] = now
-            return anchor
-    except Exception:
-        pass
-
-    return _anchor_cache["max_id"] or 4_000_000_000
-
-def deezer_get(url, max_retries=2):
-    for attempt in range(max_retries):
-        try:
-            resp = _deezer_session.get(url, timeout=5).json()
-        except Exception:
-            return None
-        err = resp.get("error")
-        if err:
-            if err.get("code") == 4 and attempt < max_retries - 1:
-                time.sleep(0.3)
-            else:
-                return None
-        else:
-            return resp
-    return None
-
 def build_track_result(track_data, artist_id=None, nb_fan=None):
-    resolved_artist_id = artist_id or track_data.get("artist", {}).get("id")
-    album_id = track_data.get("album", {}).get("id")
+    artist = track_data.get("artist", {}) or {}
+    resolved_artist_id = artist_id or artist.get("id")
+    album = track_data.get("album", {}) or {}
+    album_id = album.get("id")
     resolved_nb_fan = nb_fan if nb_fan is not None else get_artist_fans(resolved_artist_id)
 
     return {
-        "id":      track_data["id"],
-        "title":   censor(track_data["title"]),
-        "artist":  censor(track_data["artist"]["name"]),
-        "genre":   get_genre(album_id),
-        "rank":    track_data.get("rank", 0),
-        "nb_fan":  resolved_nb_fan,
+        "id":       track_data.get("id"),
+        "title":    censor(track_data.get("title", "Unknown Title")),
+        "artist":   censor(artist.get("name", "Unknown Artist")),
+        "genre":    get_genre(album_id),
+        "rank":     track_data.get("rank", 0),
+        "nb_fan":   resolved_nb_fan,
         "explicit": is_explicit(track_data),
     }
 
@@ -206,14 +198,11 @@ def generate_random_seed():
     """
     Generate either a single seed or a two-word seed phrase.
     """
-
     if random.random() < 0.5:
         return random.choice(SEARCH_SEEDS)
 
-    return (
-        f"{random.choice(SEARCH_SEEDS)} "
-        f"{random.choice(SEARCH_SEEDS)}"
-    )
+    return f"{random.choice(SEARCH_SEEDS)} {random.choice(SEARCH_SEEDS)}"
+
 
 def get_rarity_from_fan_count(nb_fan):
     for tier, (fan_min, fan_max) in TIER_FAN_RANGES.items():
@@ -235,75 +224,49 @@ def get_artist_primary_genre(albums):
         return "Unknown"
     return genre_counts.most_common(1)[0][0]
 
-def get_candidate_tracks(
-    fan_min,
-    fan_max,
-    target_candidates=10
-):
+
+def get_candidate_tracks(fan_min, fan_max, target_candidates=10):
     """
     Build a small randomized pool of matching tracks.
     Fast enough for live API use.
     """
-
     candidates = []
     seen_tracks = set()
 
     for _ in range(8):
-
         seed = generate_random_seed()
-
         offset = random.randint(0, 10) * 25
 
-        try:
-            resp = _deezer_session.get(
-                f"https://api.deezer.com/search"
-                f"?q={seed}"
-                f"&limit=25"
-                f"&index={offset}",
-                timeout=5
-            ).json()
-
-        except Exception:
+        resp = deezer_get("/search", params={"q": seed, "limit": 25, "index": offset})
+        if not resp:
             continue
 
         tracks = resp.get("data", [])
-
         if not tracks:
             continue
 
         random.shuffle(tracks)
 
         for track in tracks:
-
             if is_explicit(track):
                 continue
 
             track_id = track.get("id")
-
-            if not track_id:
-                continue
-
-            if track_id in seen_tracks:
+            if not track_id or track_id in seen_tracks:
                 continue
 
             artist_id = track.get("artist", {}).get("id")
-
             if not artist_id:
                 continue
 
             nb_fan = get_artist_fans(artist_id)
-
             if nb_fan < fan_min:
                 continue
-
             if fan_max is not None and nb_fan >= fan_max:
                 continue
 
             seen_tracks.add(track_id)
-
-            candidates.append(
-                (track, artist_id, nb_fan)
-            )
+            candidates.append((track, artist_id, nb_fan))
 
             if len(candidates) >= target_candidates:
                 return candidates
@@ -315,21 +278,13 @@ def get_random_track_for_tier(fan_min, fan_max):
     """
     Randomly pick a track from a pool of valid candidates.
     """
-
-    candidates = get_candidate_tracks(
-        fan_min=fan_min,
-        fan_max=fan_max,
-        target_candidates=10
-    )
-
+    candidates = get_candidate_tracks(fan_min=fan_min, fan_max=fan_max, target_candidates=10)
     if not candidates:
         return None, None, None
-
     return random.choice(candidates)
 
 
 # ── Routes ─────────────────────────────────────────────────────────────────────
-
 
 @app.route('/artist_search')
 def artist_search():
@@ -337,25 +292,22 @@ def artist_search():
     if not query:
         return jsonify({"error": "Missing query"}), 400
 
-    try:
-        deezer_resp = requests.get(
-            f"https://api.deezer.com/search/artist?q={query}&limit=10",
-            timeout=5
-        ).json()
-    except Exception:
+    resp = deezer_get("/search/artist", params={"q": query, "limit": 10})
+    if resp is None:
         return jsonify({"error": "Deezer request failed"}), 502
 
-    raw_results = deezer_resp.get("data")
+    raw_results = resp.get("data")
     if not raw_results:
         return jsonify({"error": "No results"}), 404
 
-    results = []
-    for artist in raw_results:
-        results.append({
+    results = [
+        {
             "id":     str(artist.get("id", "")),
             "name":   censor(artist.get("name", "Unknown")),
-            "nb_fan": int(artist.get("nb_fan", 0)),
-        })
+            "nb_fan": int(artist.get("nb_fan", 0) or 0),
+        }
+        for artist in raw_results
+    ]
 
     return jsonify({"results": results})
 
@@ -366,16 +318,11 @@ def artist_tracks():
     if not artist_id:
         return jsonify({"error": "Missing id"}), 400
 
-    try:
-        # Fetch the artist's top tracks (up to 50)
-        deezer_resp = requests.get(
-            f"https://api.deezer.com/artist/{artist_id}/top?limit=50",
-            timeout=5
-        ).json()
-    except Exception:
+    resp = deezer_get(f"/artist/{artist_id}/top", params={"limit": 50})
+    if resp is None:
         return jsonify({"error": "Deezer request failed"}), 502
 
-    tracks = [t for t in deezer_resp.get("data", []) if not is_explicit(t)]
+    tracks = [t for t in resp.get("data", []) if not is_explicit(t)]
     if not tracks:
         return jsonify({"error": "No suitable tracks found"}), 404
 
@@ -395,9 +342,7 @@ def get_artist_albums(artist_id):
     page_size = 100  # Deezer's practical max per page
 
     while True:
-        resp = deezer_get(
-            f"https://api.deezer.com/artist/{artist_id}/albums?limit={page_size}&index={index}"
-        )
+        resp = deezer_get(f"/artist/{artist_id}/albums", params={"limit": page_size, "index": index})
         if not resp:
             break
         page = resp.get("data", [])
@@ -408,33 +353,43 @@ def get_artist_albums(artist_id):
             break  # last page
         index += page_size
 
-    print(f"[get_artist_albums] artist {artist_id}: fetched {len(all_albums)} releases")
-    for album in all_albums:
-        print(f"  -> record_type={album.get('record_type')!r}  title={album.get('title')!r}")
-
     all_albums.sort(key=lambda a: ALBUM_TYPE_PRIORITY.get(a.get("record_type", ""), 1))
     return all_albums[:MAX_ALBUMS_PER_ARTIST]
 
+
 def get_album_tracks(album_id):
-    resp = deezer_get(f"https://api.deezer.com/album/{album_id}/tracks?limit=100")
+    resp = deezer_get(f"/album/{album_id}/tracks", params={"limit": 100})
     return resp.get("data", []) if resp else []
+
 
 @app.route('/popular_artists')
 def popular_artists():
+    """
+    Previously this route bypassed deezer_get entirely and used a raw,
+    non-retrying requests.get — so a rate-limited response (which has no
+    "name"/"nb_fan" keys) silently produced {"name": "Unknown", "nb_fan": 0}
+    instead of retrying. That's almost certainly the source of artists
+    intermittently showing as "Unknown" in IndexGui. Now routed through
+    get_artist_info, which retries and falls back to the last-known-good
+    cached value instead of "Unknown" on failure.
+    """
     results = []
     for artist_id in TOP_ARTIST_IDS:
-        try:
-            resp = requests.get(f"https://api.deezer.com/artist/{artist_id}", timeout=5).json()
-            results.append({
-                "id": str(resp.get("id", "")),
-                "name": censor(resp.get("name", "Unknown")),
-                "nb_fan": int(resp.get("nb_fan", 0)),
-            })
-        except Exception:
+        info = get_artist_info(artist_id)
+        if info["name"] == "Unknown Artist" and info["nb_fan"] == 0:
+            # Total failure with nothing cached yet — skip rather than show a
+            # fake "Unknown" entry; it'll fill in on a later request.
             continue
+        results.append({
+            "id": str(artist_id),
+            "name": info["name"],
+            "artist_name": info["name"],  # kept alongside "name" for parity with /artist_songs
+            "nb_fan": info["nb_fan"],
+        })
 
     results.sort(key=lambda a: a["nb_fan"], reverse=True)
     return jsonify({"results": results})
+
 
 ARTIST_SONGS_TIME_BUDGET = 18  # seconds — stay safely under Render/Roblox timeouts
 
@@ -444,8 +399,6 @@ def artist_songs():
     if not artist_id:
         return jsonify({"error": "Missing id"}), 400
 
-    # NEW: resolve the artist's display name up front — cheap after the
-    # first call since it's cached, and needed either way below.
     artist_name = get_artist_name(artist_id)
 
     cached = _artist_songs_cache.get(artist_id)
@@ -454,7 +407,7 @@ def artist_songs():
         songs = cached["songs"]
         return jsonify({
             "artist_id": artist_id,
-            "artist_name": artist_name,  # NEW
+            "artist_name": artist_name,
             "total": len(songs),
             "songs": songs,
             "rarity": cached["rarity"],
@@ -501,8 +454,6 @@ def artist_songs():
     rarity = get_rarity_from_fan_count(nb_fan)
     genre = get_artist_primary_genre(albums)
 
-    # Only cache (and only for the full TTL) if we actually got everything.
-    # Partial results get a short TTL so a retry soon can fill in the rest.
     _artist_songs_cache[artist_id] = {
         "timestamp": now,
         "songs": songs,
@@ -515,7 +466,7 @@ def artist_songs():
 
     return jsonify({
         "artist_id": artist_id,
-        "artist_name": artist_name,  # NEW
+        "artist_name": artist_name,
         "total": len(songs),
         "songs": songs,
         "rarity": rarity,
@@ -523,32 +474,18 @@ def artist_songs():
         "partial": hit_time_budget,
     })
 
+
 @app.route('/random')
 def random_song():
-
     tier = request.args.get("tier", "Common")
 
     if tier not in TIER_FAN_RANGES:
-        return jsonify({
-            "error": "Invalid tier"
-        }), 400
+        return jsonify({"error": "Invalid tier"}), 400
 
     fan_min, fan_max = TIER_FAN_RANGES[tier]
-
-    track, artist_id, nb_fan = get_random_track_for_tier(
-        fan_min,
-        fan_max
-    )
+    track, artist_id, nb_fan = get_random_track_for_tier(fan_min, fan_max)
 
     if not track:
-        return jsonify({
-            "error": "Could not find a track after several attempts"
-        }), 503
+        return jsonify({"error": "Could not find a track after several attempts"}), 503
 
-    return jsonify({
-        "result": build_track_result(
-            track,
-            artist_id=artist_id,
-            nb_fan=nb_fan
-        )
-    })
+    return jsonify({"result": build_track_result(track, artist_id=artist_id, nb_fan=nb_fan)})

@@ -318,16 +318,24 @@ def artist_tracks():
     if not artist_id:
         return jsonify({"error": "Missing id"}), 400
 
+    exclude_param = request.args.get('exclude', '')
+    exclude_ids = set(exclude_param.split(',')) if exclude_param else set()
+
     resp = deezer_get(f"/artist/{artist_id}/top", params={"limit": 50})
     if resp is None:
         return jsonify({"error": "Deezer request failed"}), 502
 
-    tracks = [t for t in resp.get("data", []) if not is_explicit(t)]
+    tracks = [
+        t for t in resp.get("data", [])
+        if not is_explicit(t)
+        and str(t.get("artist", {}).get("id")) == str(artist_id)   # reject features/collabs
+        and str(t.get("id")) not in exclude_ids                     # actually honor exclude
+    ]
     if not tracks:
-        return jsonify({"error": "No suitable tracks found"}), 404
+        return jsonify({"error": "no_new_tracks"}), 404            # matches the string QuestService checks for
 
     track = random.choice(tracks)
-    return jsonify({"result": build_track_result(track)})
+    return jsonify({"result": build_track_result(track, artist_id=artist_id)})
 
 
 ARTIST_SONGS_TTL_SECONDS = 86400  # discographies rarely change, cache for a day

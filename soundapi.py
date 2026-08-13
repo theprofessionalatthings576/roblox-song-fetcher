@@ -182,13 +182,14 @@ def build_track_result(track_data, artist_id=None, nb_fan=None):
     resolved_nb_fan = nb_fan if nb_fan is not None else get_artist_fans(resolved_artist_id)
 
     return {
-        "id":       track_data.get("id"),
-        "title":    censor(track_data.get("title", "Unknown Title")),
-        "artist":   censor(artist.get("name", "Unknown Artist")),
-        "genre":    get_genre(album_id),
-        "rank":     track_data.get("rank", 0),
-        "nb_fan":   resolved_nb_fan,
-        "explicit": is_explicit(track_data),
+        "id":        track_data.get("id"),
+        "title":     censor(track_data.get("title", "Unknown Title")),
+        "artist":    censor(artist.get("name", "Unknown Artist")),
+        "artistId":  str(resolved_artist_id) if resolved_artist_id else None,   # new
+        "genre":     get_genre(album_id),
+        "rank":      track_data.get("rank", 0),
+        "nb_fan":    resolved_nb_fan,
+        "explicit":  is_explicit(track_data),
     }
 
 

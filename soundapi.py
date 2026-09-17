@@ -193,6 +193,20 @@ def build_track_result(track_data, artist_id=None, nb_fan=None):
     }
 
 
+def extract_year(release_date):
+    """
+    Deezer release_date strings are normally 'YYYY-MM-DD', but treat
+    anything unparsable as unknown rather than raising — a malformed date
+    from the API shouldn't 500 the whole request.
+    """
+    if not release_date or len(release_date) < 4:
+        return None
+    try:
+        return int(release_date[:4])
+    except (ValueError, TypeError):
+        return None
+
+
 # ── Track sourcing ─────────────────────────────────────────────────────────────
 
 def generate_random_seed():
@@ -404,83 +418,107 @@ ARTIST_SONGS_TIME_BUDGET = 18  # seconds — stay safely under Render/Roblox tim
 
 @app.route('/artist_songs')
 def artist_songs():
+    """
+    Optional 'start' / 'end' query params (years) filter the returned songs
+    to those from albums released in that range, e.g.
+    /artist_songs?id=123&start=1980&end=1989
+
+    The underlying cache always holds the artist's FULL discography with
+    each song's release year attached — filtering happens on the cached
+    data, so requesting a different decade for an already-cached artist
+    never triggers a re-fetch from Deezer. Omit start/end for the old
+    full-discography behavior.
+    """
     artist_id = request.args.get('id')
     if not artist_id:
         return jsonify({"error": "Missing id"}), 400
+
+    start_year = request.args.get('start', type=int)
+    end_year = request.args.get('end', type=int)
+    if start_year is not None and end_year is not None and start_year > end_year:
+        return jsonify({"error": "start must be <= end"}), 400
 
     artist_name = get_artist_name(artist_id)
 
     cached = _artist_songs_cache.get(artist_id)
     now = time.time()
-    if cached and (now - cached["timestamp"] < ARTIST_SONGS_TTL_SECONDS) and not cached.get("partial"):
-        songs = cached["songs"]
-        return jsonify({
-            "artist_id": artist_id,
-            "artist_name": artist_name,
-            "total": len(songs),
+    if not (cached and (now - cached["timestamp"] < ARTIST_SONGS_TTL_SECONDS) and not cached.get("partial")):
+        albums = get_artist_albums(artist_id)
+        if not albums:
+            return jsonify({"error": "No albums found"}), 404
+
+        seen_titles = set()
+        songs = []
+        start_time = time.time()
+        hit_time_budget = False
+
+        for album in albums:
+            if time.time() - start_time > ARTIST_SONGS_TIME_BUDGET:
+                hit_time_budget = True
+                break
+
+            album_id = album.get("id")
+            album_title = album.get("title", "")
+            album_year = extract_year(album.get("release_date"))
+            if not album_id:
+                continue
+
+            for track in get_album_tracks(album_id):
+                if is_explicit(track):
+                    continue
+                title = track.get("title", "")
+                title_key = title.lower().strip()
+                if not title_key or title_key in seen_titles:
+                    continue
+                seen_titles.add(title_key)
+                songs.append({
+                    "id":           track.get("id"),
+                    "title":        censor(title),
+                    "album":        censor(album_title),
+                    "release_date": album.get("release_date"),  # 'YYYY-MM-DD' or None
+                    "year":         album_year,                  # int or None — used for decade filtering
+                })
+
+        if not songs:
+            return jsonify({"error": "No suitable tracks found"}), 404
+
+        nb_fan = get_artist_fans(artist_id)
+        rarity = get_rarity_from_fan_count(nb_fan)
+        genre = get_artist_primary_genre(albums)
+
+        cache_entry = {
+            "timestamp": now,
             "songs": songs,
-            "rarity": cached["rarity"],
-            "genre": cached["genre"],
-        })
+            "rarity": rarity,
+            "genre": genre,
+            "partial": hit_time_budget,
+        }
+        if hit_time_budget:
+            cache_entry["timestamp"] = now - ARTIST_SONGS_TTL_SECONDS + 60  # expires in ~60s
 
-    albums = get_artist_albums(artist_id)
-    if not albums:
-        return jsonify({"error": "No albums found"}), 404
+        _artist_songs_cache[artist_id] = cache_entry
+        cached = cache_entry
 
-    seen_titles = set()
-    songs = []
-    start_time = time.time()
-    hit_time_budget = False
+    songs = cached["songs"]
 
-    for album in albums:
-        if time.time() - start_time > ARTIST_SONGS_TIME_BUDGET:
-            hit_time_budget = True
-            break
-
-        album_id = album.get("id")
-        album_title = album.get("title", "")
-        if not album_id:
-            continue
-
-        for track in get_album_tracks(album_id):
-            if is_explicit(track):
-                continue
-            title = track.get("title", "")
-            title_key = title.lower().strip()
-            if not title_key or title_key in seen_titles:
-                continue
-            seen_titles.add(title_key)
-            songs.append({
-                "id":    track.get("id"),
-                "title": censor(title),
-                "album": censor(album_title),
-            })
-
-    if not songs:
-        return jsonify({"error": "No suitable tracks found"}), 404
-
-    nb_fan = get_artist_fans(artist_id)
-    rarity = get_rarity_from_fan_count(nb_fan)
-    genre = get_artist_primary_genre(albums)
-
-    _artist_songs_cache[artist_id] = {
-        "timestamp": now,
-        "songs": songs,
-        "rarity": rarity,
-        "genre": genre,
-        "partial": hit_time_budget,
-    }
-    if hit_time_budget:
-        _artist_songs_cache[artist_id]["timestamp"] = now - ARTIST_SONGS_TTL_SECONDS + 60  # expires in ~60s
+    # Decade/year-range filter applied over the cached full discography.
+    # Songs with an unknown year (album had no parsable release_date) are
+    # excluded once a range is requested, since we can't place them in it.
+    if start_year is not None or end_year is not None:
+        lo = start_year if start_year is not None else float("-inf")
+        hi = end_year if end_year is not None else float("inf")
+        songs = [s for s in songs if s["year"] is not None and lo <= s["year"] <= hi]
 
     return jsonify({
         "artist_id": artist_id,
         "artist_name": artist_name,
         "total": len(songs),
         "songs": songs,
-        "rarity": rarity,
-        "genre": genre,
-        "partial": hit_time_budget,
+        "rarity": cached["rarity"],
+        "genre": cached["genre"],
+        "partial": cached["partial"],
+        "start": start_year,
+        "end": end_year,
     })
 
 

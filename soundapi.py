@@ -376,7 +376,19 @@ def get_artist_albums(artist_id):
             break  # last page
         index += page_size
 
-    all_albums.sort(key=lambda a: ALBUM_TYPE_PRIORITY.get(a.get("record_type", ""), 1))
+    # Sort by record-type priority first (favor real albums over singles),
+    # then by release year ASCENDING within each type. Deezer's raw order is
+    # newest-first, so without the year tiebreak, MAX_ALBUMS_PER_ARTIST was
+    # truncating to the newest 40 entries — for legacy artists with large
+    # remaster/reissue catalogs (Queen, Madonna, etc.) that meant every
+    # original 1980s album got cut before the decade filter ever saw it,
+    # even though the artist clearly has 80s material.
+    def sort_key(album):
+        type_priority = ALBUM_TYPE_PRIORITY.get(album.get("record_type", ""), 1)
+        year = extract_year(album.get("release_date")) or 9999  # unknown dates sort last
+        return (type_priority, year)
+
+    all_albums.sort(key=sort_key)
     return all_albums[:MAX_ALBUMS_PER_ARTIST]
 
 
